@@ -9,14 +9,34 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+
 ```{r, warning=FALSE}
 library(dplyr)
+library(moments)
+library(ggplot2)
+library(lattice)
+library(caret)
+set.seed(1234)
+library(naivebayes)
+library(pROC)
+library(caTools)
+library(rpart.plot)
+library(rpart)
+library(randomForest)
+
+
 ```
 
 ```{r echo=TRUE}
 
 #import the original adult csv from canvas here
-df = read.csv("adult_og.csv")
+df = read.csv("data/adult-salaries.csv")
+
+```
+
+```{r echo=TRUE}
+
+#import the original adult csv from canvas here
 
 names(df) <- c("age","workclass","fnlwgt","education", "education_num","marital_status","occupation","relationship","race","sex","capital_gain","capital_loss","hours_per_week","native_country","salary")
 
@@ -35,7 +55,7 @@ names(df)
 df = sample_n( df, size = 200000, weight = fnlwgt, replace=TRUE)
 
 #export this
-write.csv(df,"adult_sampled.csv", row.names = FALSE)
+write.csv(df,"data/adult_sampled.csv", row.names = FALSE)
 ```
 
 ```{r}
@@ -43,12 +63,9 @@ write.csv(df,"adult_sampled.csv", row.names = FALSE)
 #import the data that was previously sampled. 
 #We did the sampling once and stored it here, no need to do it again.
 
-df = read.csv("adult_sampled.csv")
-
+df = read.csv("data/adult_sampled.csv")
 
 ```
-
-Q1: How many observations (rows) and how many variables (columns) are there in the raw data?
 
 
 ```{r}
@@ -56,15 +73,11 @@ print( paste('There are',nrow(df),'rows and',ncol(df),'columns') )
 
 ```
 
-Q2: Produce a table of variables showing their types.
 
 ```{r}
 data.frame( data_type = sapply(df, class) )
 ```
 
-Q3: Some of the variables appear to be numeric but should be treated as categorical. Your best clue is whether a variable has only a few discrete values. Which numeric variables should be treated as categorical?
-
-None need conversion to categorical.
 
 "education_num" can be used to designate the levels when converting "education" to a factor
 
@@ -76,7 +89,7 @@ data.frame( num_unique = sapply(df, n_distinct) ,
     arrange(num_unique)
 ```
 
-Q4: For numeric variables, produce a table of statistics including missing values, min, max, median, mean, standard deviation, skewness and kurtosis.
+For numeric variables, produce a table of statistics including missing values, min, max, median, mean, standard deviation, skewness and kurtosis.
 
 "capital_gain" and "capital_loss" have the highest kurtosis, yet the most common value is zero.
 
@@ -85,7 +98,6 @@ If we remove their outliers, we are left with all zeroes.
 We can replace the zeroes with NA, remove the outliers, then add the zeroes back
 
 ```{r warning=FALSE}
-library(moments)
 
 getmode <- function(v) {
    uniqv <- unique(v)
@@ -113,7 +125,7 @@ numeric_stats <- data.frame(
 numeric_stats
 ```
 
-Q5: How many outliers are present in each numeric variable? Show the tallies in a table. Set them to missing.
+Outlier removal and imputation:
 
 We do not want to remove outliers in cases where the max value is normal or where kurtosis is low.
 
@@ -193,7 +205,8 @@ for (i in outlier_plot_cols){
 }
 ```
 
-Boxplot shows before and after having removed zeroes. After removing zeroes, we will remove any values above 2.5 standard deviations above the mean to eliminate very large values.
+Boxplot shows before and after having removed zeroes. 
+After removing zeroes, we will remove any values above 2.5 standard deviations above the mean to eliminate very large values.
 
 ```{r}
 
@@ -231,7 +244,7 @@ for (i in outlier_plot_cols){
 
 Plot shows before vs after having removed zeroes, then removed outliers, and added zeroes back.
 
-Q6: Count the unique values of each categorical variable, including missing values. Are there any unusual values in any of the categorical variables?
+EDA / Sanity check :
 
 Many values are marked with "?" -- so, where are they? and set them to NA.
 
@@ -300,7 +313,7 @@ df = df %>% mutate(
 )
 ```
 
-Q7: Impute the missing values. Be sure to explain how you did that in your presentation.
+Impute the missing values.
 
 Replaced NAs with the mean.
 
@@ -319,7 +332,7 @@ df = select(df, -cg, -cl)
 
 ```
 
-Q8: Produce a histogram or boxplot for each of the numeric variables.
+EDA, continued 
 
 ```{r}
 
@@ -347,9 +360,7 @@ for (i in numeric_cols){
 }
 ```
 
-Q9: Produce a bar chart for each of the categorical variables showing the counts for each unique value.
 
-First, create factors
 
 ```{r}
 
@@ -390,7 +401,6 @@ df$married = factor(df$married)
 ```
 
 ```{r}
-library(ggplot2)
 ggplot(df) +
  aes_string(x = "workclass") +
  geom_bar(fill = "#112446") +
@@ -454,7 +464,7 @@ ggplot(df) +
 
 # if you wish to do the model with another software, make sure to use this datat that has been formatted
 
-#write.csv(df,"adult_sampled_formatted_pre_model.csv", row.names = FALSE)
+#write.csv(df,"data/adult_sampled_formatted_pre_model.csv", row.names = FALSE)
 
 
 ```
@@ -465,9 +475,6 @@ Split train and test data
 
 ```{r, warning=FALSE}
 
-library(lattice)
-library(caret)
-set.seed(1234)
 
 training.rows <- sample(1:nrow(df),size=0.7*nrow(df))
 train_data <- df[training.rows,]
@@ -493,9 +500,7 @@ model_stats = data.frame(metric = c("Accuracy","True Positive Rate","False Posit
 c(names(df))
 ```
 
-Q10: Naïve Bayes Model
-
-Q10.1 Build a model to predict income \> \$50K using naïve Bayes. Randomly partition the data into a training set (70%) and a validation set (30%).
+Naïve Bayes Model
 
 Which variables are important?
 
@@ -514,7 +519,6 @@ capital_gain capital_loss
 age+race+native_country+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss
 
 ```{r, warning=FALSE}
-library(naivebayes)
 
 NBmodel <- naive_bayes(salary ~ age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss,
                      data = train_data) 
@@ -522,7 +526,8 @@ summary(NBmodel)
 
 ```
 
-Q10.2 Score the validation data (predict) using the model. Produce a confusion table and an ROC curve for the scored validation data.
+Score the validation data (predict) using the model. 
+Produce a confusion table and an ROC curve for the scored validation data.
 
 ```{r, warning=FALSE}
 #classification matrix
@@ -542,13 +547,12 @@ print(classMatrix)
 ROC Curve
 
 ```{r echo=TRUE}
-library(pROC)
 
 roc_curve = roc(test_data$salary,predNB,plot = TRUE, print.auc = TRUE)
 AUC<- auc(roc_curve)
 ```
 
-Q10.3 From the confusion table calculate the following metrics: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
+Calculate: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
 
 ```{r, warning=FALSE}
 
@@ -607,9 +611,7 @@ model_stats$naiveBayes = round(model_stats$naiveBayes,2)
 ```
 
 
-Q11: Logit Model
-
-Q11.1 Build a model to predict income \> \$50K using logistic regression. Randomly partition the data into a training set (70%) and a validation set (30%).
+Logit Model
 
 ```{r}
 
@@ -622,14 +624,14 @@ summary(LRmodel)
 
 ```
 
-Q11.2 For which variables can we reject the null hypothesis that their coefficients equal zero?
+Which variables can we reject the null hypothesis that their coefficients equal zero?
 
 ```{r}
 varImp(LRmodel) %>% arrange(-Overall)
 ```
 
 
-Q11.3 Score the validation data (predict) using the model. Produce a confusion table and an ROC curve for the scored validation data.
+Score the validation data (predict) using the logit model.
 
 ```{r}
 #classification matrix
@@ -645,14 +647,14 @@ print(classMatrix)
 
 ```
 
-\#ROC Curve
+ROC Curve
 
 ```{r}
 roc_curve = roc(test_data$salary,predLR,plot = TRUE, print.auc = TRUE)
 AUC<- auc(roc_curve)
 ```
 
-Q11.4 From the confusion table calculate the following metrics: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
+Calculate: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
 
 ```{r}
 
@@ -709,29 +711,25 @@ model_stats$Logistic = round(model_stats$Logistic,2)
 
 ```
 
-Q12: Tree Model (CART)
-
-Q12.1 Build a model to predict income \> \$50K using a classification tree and a random forest with the same training and validation data used for the naïve Bayes and logistic regression models.
+Tree Model (CART)
 
 ```{r}
-library(caTools)
-library(rpart.plot)
-library(rpart)
+
 adultTree = rpart(y ~ age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss, data=train_data, method="class", minbucket = 25)
 
 #summary(adultTree)
 ```
 
 
-Q12.2 Which variables are useful for decision rules?
+Variable/feature importance
 
 ```{r}
 varImp(adultTree) %>% arrange(-Overall)
-write.csv(varImp(adultTree) %>% arrange(-Overall), 'variable_importance.csv') 
+write.csv(varImp(adultTree) %>% arrange(-Overall), 'data/variable_importance.csv') 
 ```
 
 
-Q12.3 Show a plot of the tree.
+Plot of the decision tree.
 
 ```{r}
 
@@ -740,7 +738,7 @@ rpart.plot(adultTree, type=4, extra=101, fallen.leaves = TRUE)
 ```
 
 
-Q12.4 Score the validation data (predict) using the model. Produce a confusion table and an ROC curve for the scored validation data.
+Score the validation data (predict) using the CART model, produce a confusion table and an ROC curve.
 
 ```{r}
 PredictCART = predict(adultTree, newdata= test_data,type='prob')[,2]
@@ -761,7 +759,7 @@ AUC<- auc(roc_curve)
 ```
 
 
-Q12.5 From the confusion table calculate the following metrics: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
+Calculate: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
 
 ```{r}
 
@@ -822,7 +820,6 @@ model_stats$CART = round(model_stats$CART,2)
 
 ```{r}
 #Random Forest
-library(randomForest)
 modelRF <- randomForest(salary~age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss, data = train_data)
 
 ```
@@ -856,6 +853,7 @@ AUC<- auc(roc_curve)
 
 ```
 
+Calculate: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
 
 ```{r}
 
@@ -913,14 +911,11 @@ model_stats$randomForest = round(model_stats$randomForest,2)
 ```
 
 
-Q13: Compare Models
-
-Q13.1 Compare these metrics between all three models. Which method do you prefer to use to predict income \> \$50K? Why?
+Compare these metrics between all three models.
 
 ```{r}
 
-
-write.csv(model_stats, file='model_stats.csv')
+write.csv(model_stats, file='data/model_stats.csv')
 model_stats
 
 ```
