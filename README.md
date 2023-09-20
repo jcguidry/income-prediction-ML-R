@@ -2,6 +2,8 @@
 
 This project is focused on predicting whether customers' salaries are above or below $50,000 based on various demographic and economic factors. It utilizes data analysis, preprocessing, and machine learning techniques to build and evaluate predictive models. The project was developed using R, and it covers the entire data science pipeline, from data exploration and preprocessing to model building and evaluation.
 
+Feel free to check out the exported [R-markdown model training code](customer-salary-prediction.pdf) and the [model results and performance metrics](./presentation/salary-prediction-results.pdf) presentation.
+
 ## Project Overview
 
 ### Data Source
