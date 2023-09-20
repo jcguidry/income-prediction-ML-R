@@ -1,0 +1,936 @@
+---
+title: "Customer Salary Prediction"
+author: "Collin Guidry"
+date: "11/3/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, warning=FALSE}
+library(dplyr)
+```
+
+```{r echo=TRUE}
+
+#import the original adult csv from canvas here
+df = read.csv("adult_og.csv")
+
+names(df) <- c("age","workclass","fnlwgt","education", "education_num","marital_status","occupation","relationship","race","sex","capital_gain","capital_loss","hours_per_week","native_country","salary")
+
+```
+
+```{r}
+names(df)
+```
+
+```{r echo=TRUE}
+
+
+# create a data set with 500,000 by sampling the data we are given
+# The probability of any row being generated is based on the "fnlwgt" column as a weight
+
+df = sample_n( df, size = 200000, weight = fnlwgt, replace=TRUE)
+
+#export this
+write.csv(df,"adult_sampled.csv", row.names = FALSE)
+```
+
+```{r}
+
+#import the data that was previously sampled. 
+#We did the sampling once and stored it here, no need to do it again.
+
+df = read.csv("adult_sampled.csv")
+
+
+```
+
+Q1: How many observations (rows) and how many variables (columns) are there in the raw data?
+
+
+```{r}
+print( paste('There are',nrow(df),'rows and',ncol(df),'columns') )
+
+```
+
+Q2: Produce a table of variables showing their types.
+
+```{r}
+data.frame( data_type = sapply(df, class) )
+```
+
+Q3: Some of the variables appear to be numeric but should be treated as categorical. Your best clue is whether a variable has only a few discrete values. Which numeric variables should be treated as categorical?
+
+None need conversion to categorical.
+
+"education_num" can be used to designate the levels when converting "education" to a factor
+
+```{r}
+data.frame( num_unique = sapply(df, n_distinct) , 
+            data_type = sapply(df, class) ) %>%
+    
+    filter(data_type == 'integer') %>%
+    arrange(num_unique)
+```
+
+Q4: For numeric variables, produce a table of statistics including missing values, min, max, median, mean, standard deviation, skewness and kurtosis.
+
+"capital_gain" and "capital_loss" have the highest kurtosis, yet the most common value is zero.
+
+If we remove their outliers, we are left with all zeroes.
+
+We can replace the zeroes with NA, remove the outliers, then add the zeroes back
+
+```{r warning=FALSE}
+library(moments)
+
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+numeric_df =  select_if(df, is.numeric)
+
+numeric_stats <- data.frame( 
+            unique = sapply(numeric_df, n_distinct),
+            isNA = sapply(numeric_df, function(x) sum(is.na(x))),
+            data_type = sapply(numeric_df, class),
+            min = sapply(numeric_df, min),
+            max = sapply(numeric_df, max),
+            mean = round( sapply(numeric_df, mean) ,0),
+            median = sapply(numeric_df, median),
+            std = round( sapply(numeric_df, sd) ,0),
+            skew = sapply(numeric_df, skewness),
+            kurt = sapply(numeric_df, kurtosis),
+            mode = sapply(numeric_df, getmode)
+            
+            ) %>%
+    arrange(unique)
+
+numeric_stats
+```
+
+Q5: How many outliers are present in each numeric variable? Show the tallies in a table. Set them to missing.
+
+We do not want to remove outliers in cases where the max value is normal or where kurtosis is low.
+
+```{r}
+
+# Statistics generated on the outliers
+
+data.frame(
+  num_outliers = sapply(numeric_df, function(x){
+         length(boxplot.stats(x)$out) }),
+  
+  outlier_mean = sapply(numeric_df, function(x){
+         round(mean(boxplot.stats(x)$out),0) }),
+  
+  outlier_min = sapply(numeric_df, function(x){
+         round(min(boxplot.stats(x)$out),0) }),
+  
+  outlier_max = round(sapply(numeric_df, max),0)
+  ) %>% 
+  arrange(-num_outliers)
+
+```
+
+Although it's abnormal, working 99 **hours_per_week** is possible.
+
+-   Don't remove
+
+**capital_gain** and **capital_loss** need outliers removed, but 3 stds is not going to work. We will create **capital_net** that represents both the value gained or lost for the population.
+
+-   Remove
+
+The highest **education_num** ber (doctorate) is normal and the lowest is also normal. They shouldn't skew out predictions.
+
+-   Don't remove
+
+**fnlwgt** represents the size of the population with the row's criteria. Removing outliers is possible
+
+A max **age** of 90 is normal.
+
+-   Don't remove
+
+```{r}
+numeric_cols = names(numeric_df)
+
+par(mfrow = c(1, length(numeric_cols)))
+for (i in numeric_cols){
+  boxplot(
+    df[i],
+    xlab=c(i),
+    coef = 1
+    )
+}
+```
+
+```{r}
+
+#make duplicate column for capital_gain
+df$cg = df$capital_gain
+#set zero to NA
+df$cg[df$cg==0]<-NA
+
+#make duplicate column for capital_loss
+df$cl = df$capital_loss
+#set zero to NA
+df$cl[df$cl==0]<-NA
+
+
+outlier_plot_cols = c('capital_gain','cg','capital_loss','cl')
+
+par(mfrow = c(1, length(outlier_plot_cols)))
+for (i in outlier_plot_cols){
+  boxplot(
+    df[i],
+    xlab=c(i),
+    coef = 1
+    )
+}
+```
+
+Boxplot shows before and after having removed zeroes. After removing zeroes, we will remove any values above 2.5 standard deviations above the mean to eliminate very large values.
+
+```{r}
+
+
+outlier_cols = c('cg','cl')
+
+#remove outliers
+#df[outlier_cols] <- data.frame(lapply( df[outlier_cols], function(x) {
+# ifelse(x %in% boxplot.stats(x)$out, NA, x) }))
+
+
+df[outlier_cols] <- data.frame( lapply(df[outlier_cols], 
+  function(x, na.rm = TRUE) 
+    {ifelse( (x < 0) | x > (mean(x, na.rm = TRUE) + 2 *sd(x, na.rm = TRUE)), NA, x) }))
+
+
+#add zeroes back into duplicate col
+df$cg [df$capital_gain==0]<-0
+df$cl [df$capital_loss==0]<-0
+
+outlier_plot_cols = c('capital_gain','cg','capital_loss','cl')
+
+par(mfrow = c(1, length(outlier_plot_cols)))
+for (i in outlier_plot_cols){
+  boxplot(
+    df[i],
+    xlab=c(i),
+    coef = 1
+    )
+}
+
+
+
+```
+
+Plot shows before vs after having removed zeroes, then removed outliers, and added zeroes back.
+
+Q6: Count the unique values of each categorical variable, including missing values. Are there any unusual values in any of the categorical variables?
+
+Many values are marked with "?" -- so, where are they? and set them to NA.
+
+Remove "?"s or no?
+
+```{r eval=FALSE, include=FALSE}
+
+# no need to display this any more
+
+data.frame(
+  missing =  sapply(df, function(x) sum(x==' ?') )) %>%
+  arrange(-missing)
+
+#set ? to NA
+#df[df==' ?']<-NA
+```
+
+Show count of unique categorical values and NA coun
+
+```{r}
+cat_stats <- data.frame( 
+            unique = sapply(df, n_distinct),
+            NA_count = sapply(df, function(x) sum(is.na(x))),
+            data_type = sapply(df, class)
+            ) %>%
+    filter(data_type == 'character') %>%
+    select(unique, NA_count) %>%
+    arrange(unique)
+    
+cat_stats
+```
+
+Any strange number of unique values?
+
+-   Martital status should be reduced to married vs not married.
+
+-   Education can be reduced to lower, middle, high school, some college, college, grad school.
+
+-   Any others? Workclass?
+
+```{r}
+
+df = df %>% mutate(
+  married = case_when(
+    marital_status == ' Divorced' ~ "N",
+    marital_status == ' Married-AF-spouse' ~ "Y",
+    marital_status == ' Married-civ-spouse' ~ "Y",
+    marital_status == ' Married-spouse-absent' ~ "Y",
+    marital_status == ' Never-married' ~ "N",
+    marital_status == ' Separated' ~ "Y",
+    marital_status == ' Widowed' ~ "N"
+  )
+)
+
+
+df = df %>% mutate(
+  education_simple = case_when(
+    education_num <=4 ~ "Below High School",
+    education_num >=5 & education_num <=8 ~ "Some High School",
+    education_num ==9 ~ "High School",
+    education_num ==10 ~ "Some College",
+    education_num >=11 & education_num <=13 ~ "College",
+    education_num >=14 ~ "Masters or Above"
+  
+  )
+)
+```
+
+Q7: Impute the missing values. Be sure to explain how you did that in your presentation.
+
+Replaced NAs with the mean.
+
+```{r}
+
+outlier_cols = c('cg','cl')
+
+df[outlier_cols] <- data.frame(lapply(df[outlier_cols], function(x) {
+  ifelse(is.na(x), mean(x, na.rm = TRUE), x) }))
+
+
+# overwrite capital_gain and capital_loss with cg and gl, then drop cg and cl
+df$capital_gain = df$cg
+df$capital_loss = df$cl
+df = select(df, -cg, -cl)
+
+```
+
+Q8: Produce a histogram or boxplot for each of the numeric variables.
+
+```{r}
+
+numeric_cols = names(numeric_df)
+
+par(mfrow = c(1, length(numeric_cols)))
+for (i in numeric_cols){
+  boxplot(
+    df[i],
+    xlab=c(i),
+    coef = 1
+    )}
+
+```
+
+```{r}
+numeric_cols = names(numeric_df)
+
+par(mfrow = c(1, length(numeric_cols)))
+for (i in numeric_cols){
+  hist(
+    df[[i]],
+    xlab=c(i)
+    )
+}
+```
+
+Q9: Produce a bar chart for each of the categorical variables showing the counts for each unique value.
+
+First, create factors
+
+```{r}
+
+data.frame(type=sapply(df,class)) %>% filter(type== 'character')
+#data.frame(table(df$education_simple))
+```
+
+Convert All Categorical Columns to Factors
+
+```{r}
+
+#df$capital_gain = log( df$capital_gain )
+
+df$workclass = factor(df$workclass)
+
+df$education = factor(df$education, levels=
+c(' Preschool' ,' 1st-4th' ,' 5th-6th' ,' 7th-8th' ,' 9th' ,' 10th' ,' 11th' ,' 12th' ,' HS-grad' ,' Some-college' ,' Assoc-voc' ,' Assoc-acdm' ,' Bachelors' ,' Masters' ,' Prof-school' ,' Doctorate') )
+
+df$education_simple = factor(df$education_simple, levels=
+c( 'Below High School','Some High School','High School','Some College','College','Masters or Above') )
+
+df$marital_status = factor(df$marital_status)
+df$occupation = factor(df$occupation)
+df$relationship = factor(df$relationship)
+df$race = factor(df$race)
+df$sex = factor(df$sex)
+df$native_country = factor(df$native_country)
+
+df [df$salary==' >50K' , 'y'] = 1
+df [df$salary==' <=50K' , 'y'] = 0
+df$y = factor(df$y)
+
+df$salary = factor(df$salary, levels = c(' <=50K',' >50K'))
+
+df$married = factor(df$married)
+
+#head(df$salary)
+```
+
+```{r}
+library(ggplot2)
+ggplot(df) +
+ aes_string(x = "workclass") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+
+ggplot(df) +
+ aes_string(x = "education") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "education_simple") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "marital_status") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "relationship") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "race") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "sex") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "salary") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+ggplot(df) +
+ aes_string(x = "married") +
+ geom_bar(fill = "#112446") +
+ coord_flip() +
+ theme_minimal()
+
+
+
+```
+
+```{r}
+
+# if you wish to do the model with another software, make sure to use this datat that has been formatted
+
+#write.csv(df,"adult_sampled_formatted_pre_model.csv", row.names = FALSE)
+
+
+```
+
+# Models
+
+Split train and test data
+
+```{r, warning=FALSE}
+
+library(lattice)
+library(caret)
+set.seed(1234)
+
+training.rows <- sample(1:nrow(df),size=0.7*nrow(df))
+train_data <- df[training.rows,]
+test_data <- df[-training.rows,]
+
+
+nrow(df)
+print(nrow(train_data) )
+print(nrow(test_data) )
+
+```
+
+```{r}
+#this is where we will store the metrics for each model
+model_stats = data.frame(metric = c("Accuracy","True Positive Rate","False Positive Rate","Specificity","Precision","Prevalence"))
+```
+
+
+```{r}
+#our variables
+
+#data.frame(type=sapply(df,class))
+c(names(df))
+```
+
+Q10: Naïve Bayes Model
+
+Q10.1 Build a model to predict income \> \$50K using naïve Bayes. Randomly partition the data into a training set (70%) and a validation set (30%).
+
+Which variables are important?
+
+Let's start with:
+
+age race native_country
+
+married relationship
+
+workclass occupation hours_per_week
+
+education education_simple
+
+capital_gain capital_loss
+
+age+race+native_country+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss
+
+```{r, warning=FALSE}
+library(naivebayes)
+
+NBmodel <- naive_bayes(salary ~ age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss,
+                     data = train_data) 
+summary(NBmodel)
+
+```
+
+Q10.2 Score the validation data (predict) using the model. Produce a confusion table and an ROC curve for the scored validation data.
+
+```{r, warning=FALSE}
+#classification matrix
+predNB = predict(NBmodel, test_data, type="prob")[,2] #This is the probability that the score is a "good score"
+
+pred = predNB
+pred[pred>=.5] = 1
+pred[pred!=1] = 0
+
+classMatrix = table(pred,test_data$salary) #first variable is by row, the second is by column
+print("Classification Matrix:")
+print(classMatrix)
+
+```
+
+
+ROC Curve
+
+```{r echo=TRUE}
+library(pROC)
+
+roc_curve = roc(test_data$salary,predNB,plot = TRUE, print.auc = TRUE)
+AUC<- auc(roc_curve)
+```
+
+Q10.3 From the confusion table calculate the following metrics: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
+
+```{r, warning=FALSE}
+
+
+#Accuracy score?
+print("Accuracy:")
+accuracy = sum(diag(classMatrix))/sum(classMatrix)
+print(accuracy)
+
+cat("\n")
+
+print("Misclassification Rate")
+print(1-accuracy)
+
+cat("\n")
+
+true_negative<-classMatrix[1,1]
+false_positive<-classMatrix[2,1]
+true_positive<-classMatrix[2,2]
+false_negative<-classMatrix[1,2]
+
+
+print("True Positive Rate")
+true_positive_rate = (true_positive)/ (true_positive + false_negative)
+print(true_positive_rate)
+
+cat("\n")
+
+print("False Positive Rate")
+false_positive_rate = (false_positive)/ (false_positive + true_negative)
+print(false_positive_rate)
+
+cat("\n")
+
+print("Specificity:")
+specificity<-true_negative/(true_negative+false_negative)
+print(specificity)
+
+cat("\n")
+
+print("Precision:")
+precision<-true_positive/(true_positive+false_positive)
+print(precision)
+
+cat("\n")
+
+print("Prevalence:")
+prevalence = (true_positive + false_negative)/(true_negative+false_positive+true_positive+false_negative)
+print(prevalence)
+
+#add to model_stats
+model_stats$naiveBayes = c(accuracy, true_positive_rate, false_positive_rate, specificity, precision, 1)
+model_stats$naiveBayes = round(model_stats$naiveBayes,2)
+
+
+```
+
+
+Q11: Logit Model
+
+Q11.1 Build a model to predict income \> \$50K using logistic regression. Randomly partition the data into a training set (70%) and a validation set (30%).
+
+```{r}
+
+LRmodel = glm(salary~
+            age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss,
+            train_data, family = "binomial")
+
+summary(LRmodel)
+
+
+```
+
+Q11.2 For which variables can we reject the null hypothesis that their coefficients equal zero?
+
+```{r}
+varImp(LRmodel) %>% arrange(-Overall)
+```
+
+
+Q11.3 Score the validation data (predict) using the model. Produce a confusion table and an ROC curve for the scored validation data.
+
+```{r}
+#classification matrix
+predLR = predict(LRmodel,test_data,type="response") #This is the probability that the score is a "good score"
+pred = predLR
+pred[pred>=.5] = 1
+pred[pred!=1] = 0
+
+classMatrix = table(pred,test_data$salary) #first variable is by row, the second is by column
+print("Classification Matrix:")
+print(classMatrix)
+
+
+```
+
+\#ROC Curve
+
+```{r}
+roc_curve = roc(test_data$salary,predLR,plot = TRUE, print.auc = TRUE)
+AUC<- auc(roc_curve)
+```
+
+Q11.4 From the confusion table calculate the following metrics: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
+
+```{r}
+
+
+#Accuracy score?
+print("Accuracy:")
+accuracy = sum(diag(classMatrix))/sum(classMatrix)
+print(accuracy)
+
+cat("\n")
+
+print("Misclassification Rate")
+print(1-accuracy)
+
+cat("\n")
+
+true_negative<-classMatrix[1,1]
+false_positive<-classMatrix[2,1]
+true_positive<-classMatrix[2,2]
+false_negative<-classMatrix[1,2]
+
+
+print("True Positive Rate")
+true_positive_rate = (true_positive)/ (true_positive + false_negative)
+print(true_positive_rate)
+
+cat("\n")
+
+print("False Positive Rate")
+false_positive_rate = (false_positive)/ (false_positive + true_negative)
+print(false_positive_rate)
+
+cat("\n")
+
+print("Specificity:")
+specificity<-true_negative/(true_negative+false_negative)
+print(specificity)
+
+cat("\n")
+
+print("Precision:")
+precision<-true_positive/(true_positive+false_positive)
+print(precision)
+
+cat("\n")
+
+print("Prevalence:")
+prevalence = (true_positive + false_negative)/(true_negative+false_positive+true_positive+false_negative)
+print(prevalence)
+
+#add to model_stats
+model_stats$Logistic = c(accuracy, true_positive_rate, false_positive_rate, specificity, precision, 1)
+model_stats$Logistic = round(model_stats$Logistic,2)
+
+```
+
+Q12: Tree Model (CART)
+
+Q12.1 Build a model to predict income \> \$50K using a classification tree and a random forest with the same training and validation data used for the naïve Bayes and logistic regression models.
+
+```{r}
+library(caTools)
+library(rpart.plot)
+library(rpart)
+adultTree = rpart(y ~ age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss, data=train_data, method="class", minbucket = 25)
+
+#summary(adultTree)
+```
+
+
+Q12.2 Which variables are useful for decision rules?
+
+```{r}
+varImp(adultTree) %>% arrange(-Overall)
+write.csv(varImp(adultTree) %>% arrange(-Overall), 'variable_importance.csv') 
+```
+
+
+Q12.3 Show a plot of the tree.
+
+```{r}
+
+rpart.plot(adultTree, type=4, extra=101, fallen.leaves = TRUE)
+
+```
+
+
+Q12.4 Score the validation data (predict) using the model. Produce a confusion table and an ROC curve for the scored validation data.
+
+```{r}
+PredictCART = predict(adultTree, newdata= test_data,type='prob')[,2]
+
+pred = PredictCART
+pred[pred>=.5] = 1
+pred[pred!=1] = 0
+
+classMatrix = table(pred,test_data$salary) #first variable is by row, the second is by column
+print("Classification Matrix:")
+print(classMatrix)
+```
+
+
+```{r, warning=FALSE}
+roc_curve = roc(test_data$salary,PredictCART,plot = TRUE, print.auc = TRUE)
+AUC<- auc(roc_curve)
+```
+
+
+Q12.5 From the confusion table calculate the following metrics: accuracy, misclassification rate, true positive rate, false positive rate, specificity, precision, and prevalence.
+
+```{r}
+
+
+#Accuracy score?
+print("Accuracy:")
+accuracy = sum(diag(classMatrix))/sum(classMatrix)
+print(accuracy)
+
+cat("\n")
+
+print("Misclassification Rate")
+print(1-accuracy)
+
+cat("\n")
+
+true_negative<-classMatrix[1,1]
+false_positive<-classMatrix[2,1]
+true_positive<-classMatrix[2,2]
+false_negative<-classMatrix[1,2]
+
+
+print("True Positive Rate")
+true_positive_rate = (true_positive)/ (true_positive + false_negative)
+print(true_positive_rate)
+
+cat("\n")
+
+print("False Positive Rate")
+false_positive_rate = (false_positive)/ (false_positive + true_negative)
+print(false_positive_rate)
+
+cat("\n")
+
+print("Specificity:")
+specificity<-true_negative/(true_negative+false_negative)
+print(specificity)
+
+cat("\n")
+
+print("Precision:")
+precision<-true_positive/(true_positive+false_positive)
+print(precision)
+
+cat("\n")
+
+print("Prevalence:")
+prevalence = (true_positive + false_negative)/(true_negative+false_positive+true_positive+false_negative)
+print(prevalence)
+
+#add to model_stats
+model_stats$CART = c(accuracy, true_positive_rate, false_positive_rate, specificity, precision, 1)
+model_stats$CART = round(model_stats$CART,2)
+
+```
+
+
+
+```{r}
+#Random Forest
+library(randomForest)
+modelRF <- randomForest(salary~age+race+married+relationship+workclass+occupation+hours_per_week+education_simple+capital_gain+capital_loss, data = train_data)
+
+```
+
+```{r}
+
+varImp(modelRF) %>% arrange(-Overall)
+
+```
+
+
+```{r}
+PredRF = predict(modelRF, newdata= test_data,type='prob')[,2]
+pred = PredRF
+
+pred[pred>=.5] = 1
+pred[pred!=1] = 0
+
+classMatrix = table(pred,test_data$salary) #first variable is by row, the second is by column
+print("Classification Matrix:")
+print(classMatrix)
+
+```
+
+
+
+```{r}
+
+roc_curve = roc(test_data$salary,PredRF,plot = TRUE, print.auc = TRUE)
+AUC<- auc(roc_curve)
+
+```
+
+
+```{r}
+
+
+#Accuracy score?
+print("Accuracy:")
+accuracy = sum(diag(classMatrix))/sum(classMatrix)
+print(accuracy)
+
+cat("\n")
+
+print("Misclassification Rate")
+print(1-accuracy)
+
+cat("\n")
+
+true_negative<-classMatrix[1,1]
+false_positive<-classMatrix[2,1]
+true_positive<-classMatrix[2,2]
+false_negative<-classMatrix[1,2]
+
+
+print("True Positive Rate")
+true_positive_rate = (true_positive)/ (true_positive + false_negative)
+print(true_positive_rate)
+
+cat("\n")
+
+print("False Positive Rate")
+false_positive_rate = (false_positive)/ (false_positive + true_negative)
+print(false_positive_rate)
+
+cat("\n")
+
+print("Specificity:")
+specificity<-true_negative/(true_negative+false_negative)
+print(specificity)
+
+cat("\n")
+
+print("Precision:")
+precision<-true_positive/(true_positive+false_positive)
+print(precision)
+
+cat("\n")
+
+print("Prevalence:")
+prevalence = (true_positive + false_negative)/(true_negative+false_positive+true_positive+false_negative)
+print(prevalence)
+
+#add to model_stats
+model_stats$randomForest = c(accuracy, true_positive_rate, false_positive_rate, specificity, precision, 1)
+model_stats$randomForest = round(model_stats$randomForest,2)
+
+```
+
+
+Q13: Compare Models
+
+Q13.1 Compare these metrics between all three models. Which method do you prefer to use to predict income \> \$50K? Why?
+
+```{r}
+
+
+write.csv(model_stats, file='model_stats.csv')
+model_stats
+
+```
+
+
+
+
+
+
+
+
+
+
